@@ -20,9 +20,7 @@ def on_subscribe(client, userdata, mid, reason_code_list, properties):
 mqttc = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
 mqttc.on_connect = on_connect
 mqttc.on_message = on_message
-mqttc.on_subscribe = on_subscribe
 
-mqttc.user_data_set([])
 mqttc.connect("broker.emqx.io", 8883)
 
 mqttc.loop_forever()
