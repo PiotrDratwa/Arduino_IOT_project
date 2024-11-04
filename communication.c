@@ -1,82 +1,115 @@
-#include <ArduinoMqttClient.h>
 #include <ESP8266WiFi.h>
+#include <PubSubClient.h>
+#include <time.h>
 
-char ssid[] = "";       
-char pass[] = "";    
+// WiFi credentials
+const char *ssid = "";             // Replace with your WiFi name
+const char *password = "";   // Replace with your WiFi password
 
-WiFiClient wifiClient;
-MqttClient mqttClient(wifiClient);
+// MQTT Broker settings
+const int mqtt_port = 8883;  // MQTT port (TLS)
+const char *mqtt_broker = "broker.emqx.io";  // EMQX broker endpoint
+const char *mqtt_topic = "emqx/esp8266_lab_jk_pd";     // MQTT topic
+const char *mqtt_username = "";  // MQTT username for authentication
+const char *mqtt_password = "";  // MQTT password for authentication
 
-const char broker[] = "test.mosquitto.org";
-int        port     = 1883;
-const char topic[]  = "glp";
+// NTP Server settings
+const char *ntp_server = "pool.ntp.org";     // Default NTP server
+// const char* ntp_server = "cn.pool.ntp.org"; // Recommended NTP server for users in China
+const long gmt_offset_sec = 0;            // GMT offset in seconds (adjust for your time zone)
+const int daylight_offset_sec = 0;        // Daylight saving time offset in seconds
 
-//set interval for sending messages (milliseconds)
-const long interval = 8000;
-unsigned long previousMillis = 0;
+// WiFi and MQTT client initialization
+BearSSL::WiFiClientSecure espClient;
+PubSubClient mqtt_client(espClient);
 
-int count = 0;
+// SSL certificate for MQTT broker
+// Load DigiCert Global Root G2, which is used by EMQX Public Broker: broker.emqx.io
+static const char ca_cert[]
+PROGMEM = R""
+
+
+// Function declarations
+void connectToWiFi();
+
+void connectToMQTT();
+
+void syncTime();
+
+void mqttCallback(char *topic, byte *payload, unsigned int length);
+
 
 void setup() {
-  //Initialize serial and wait for port to open:
-  Serial.begin(9600);
-  while (!Serial){}
+    Serial.begin(115200);
+    connectToWiFi();
+    syncTime();  // X.509 validation requires synchronization time
+    mqtt_client.setServer(mqtt_broker, mqtt_port);
+    mqtt_client.setCallback(mqttCallback);
+    connectToMQTT();
+}
 
-  // attempt to connect to Wifi network:
-  Serial.println('\n');
-  WiFi.begin(ssid, pass);
-  Serial.print("Connecting to ");
-  Serial.print(ssid);
-  Serial.println(" ...");
-  
-  int i = 0;
-  while (WiFi.status() != WL_CONNECTED) {
-      delay(1000);
-      Serial.print(++i);
-      Serial.print(' ');
-  }
-  Serial.println('\n');
-  Serial.println("Connection established!");
-  Serial.print("IP address:\t");
-  Serial.println(WiFi.localIP());
+void connectToWiFi() {
+    WiFi.begin(ssid, password);
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(1000);
+        Serial.println("Connecting to WiFi...");
+    }
+    Serial.println("Connected to WiFi");
+}
 
-  Serial.print("Attempting to connect to the MQTT broker: ");
-  Serial.println(broker);
+void syncTime() {
+    configTime(gmt_offset_sec, daylight_offset_sec, ntp_server);
+    Serial.print("Waiting for NTP time sync: ");
+    while (time(nullptr) < 8 * 3600 * 2) {
+        delay(1000);
+        Serial.print(".");
+    }
+    Serial.println("Time synchronized");
+    struct tm timeinfo;
+    if (getLocalTime(&timeinfo)) {
+        Serial.print("Current time: ");
+        Serial.println(asctime(&timeinfo));
+    } else {
+        Serial.println("Failed to obtain local time");
+    }
+}
 
-  if (!mqttClient.connect(broker, port)) {
-    Serial.print("MQTT connection failed! Error code = ");
-    Serial.println(mqttClient.connectError());
+void connectToMQTT() {
+    BearSSL::X509List serverTrustedCA(ca_cert);
+    espClient.setTrustAnchors(&serverTrustedCA);
+    while (!mqtt_client.connected()) {
+        String client_id = "esp8266-client-" + String(WiFi.macAddress());
+        Serial.printf("Connecting to MQTT Broker as %s.....\n", client_id.c_str());
+        if (mqtt_client.connect(client_id.c_str(), mqtt_username, mqtt_password)) {
+            Serial.println("Connected to MQTT broker");
+            mqtt_client.subscribe("emqx/esp8266_lab_jk_pd");
+            // Publish message upon successful connection
+            mqtt_client.publish("emqx/esp8266_lab_jk_pd", "Hi EMQX I'm ESP8266 ^^");
+        } else {
+            char err_buf[128];
+            espClient.getLastSSLError(err_buf, sizeof(err_buf));
+            Serial.print("Failed to connect to MQTT broker, rc=");
+            Serial.println(mqtt_client.state());
+            Serial.print("SSL error: ");
+            Serial.println(err_buf);
+            delay(5000);
+        }
+    }
+}
 
-    while (1);
-  }
-
-  Serial.println("You're connected to the MQTT broker!");
-  Serial.println();
+void mqttCallback(char *topic, byte *payload, unsigned int length) {
+    Serial.print("Message received on topic: ");
+    Serial.print(topic);
+    Serial.print("]: ");
+    for (int i = 0; i < length; i++) {
+        Serial.print((char) payload[i]);
+    }
+    Serial.println();
 }
 
 void loop() {
-  // call poll() regularly to allow the library to send MQTT keep alive which
-  // avoids being disconnected by the broker
-  mqttClient.poll();
-
-  unsigned long currentMillis = millis();
-
-  if (currentMillis - previousMillis >= interval) {
-    // save the last time a message was sent
-    previousMillis = currentMillis;
-
-    //record random value from A0, A1 and A2
-    int Rvalue = 2137;
-
-    Serial.print("Sending message to topic: ");
-    Serial.println(topic);
-    Serial.println(Rvalue);
-
-    // send message, the Print interface can be used to set the message contents
-    mqttClient.beginMessage(topic);
-    mqttClient.print(Rvalue);
-    mqttClient.endMessage();
-
-    Serial.println();
-  }
+    if (!mqtt_client.connected()) {
+        connectToMQTT();
+    }
+    mqtt_client.loop();
 }
